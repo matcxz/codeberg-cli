@@ -1,0 +1,4 @@
+/cb
+/codeberg-cli
+*.test
+.env
