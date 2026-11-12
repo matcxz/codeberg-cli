@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/matcxz/codeberg-cli/internal/config"
 	"github.com/matcxz/codeberg-cli/internal/forgejo"
+	"github.com/matcxz/codeberg-cli/internal/oauth"
 	"github.com/spf13/cobra"
 )
 
@@ -33,15 +36,43 @@ func init() {
 	rootCmd.AddCommand(newAuthCommand(), newRepoCommand(), newIssueCommand(), newPRCommand(), newBrowseCommand())
 }
 
-func loadConfig() (config.Config, error) {
+func loadConfig(ctx context.Context) (config.Config, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return cfg, err
 	}
-	cfg.Host = configuredHost(cfg)
 	if token := strings.TrimSpace(os.Getenv("CODEBERG_TOKEN")); token != "" {
 		cfg.Token = token
+		cfg.OAuthClientID = ""
+		cfg.RefreshToken = ""
+		cfg.TokenExpiresAt = nil
+	} else {
+		selectedHost := configuredHost(cfg)
+		if selectedHost != cfg.Host {
+			cfg.Token = ""
+			cfg.OAuthClientID = ""
+			cfg.RefreshToken = ""
+			cfg.TokenExpiresAt = nil
+		} else if cfg.TokenExpiresAt != nil && time.Until(*cfg.TokenExpiresAt) < time.Minute {
+			if cfg.RefreshToken == "" || cfg.OAuthClientID == "" {
+				return config.Config{}, fmt.Errorf("saved OAuth token expired; run `cb auth login --web` again")
+			}
+			refreshed, err := oauth.Refresh(ctx, cfg.Host, cfg.OAuthClientID, cfg.RefreshToken)
+			if err != nil {
+				return config.Config{}, fmt.Errorf("refresh OAuth token; run `cb auth login --web` again: %w", err)
+			}
+			cfg.Token = refreshed.AccessToken
+			cfg.RefreshToken = refreshed.RefreshToken
+			cfg.TokenExpiresAt = nil
+			if !refreshed.ExpiresAt.IsZero() {
+				cfg.TokenExpiresAt = &refreshed.ExpiresAt
+			}
+			if err := config.Save(cfg); err != nil {
+				return config.Config{}, fmt.Errorf("save refreshed OAuth token: %w", err)
+			}
+		}
 	}
+	cfg.Host = configuredHost(cfg)
 	return cfg, nil
 }
 
@@ -52,8 +83,8 @@ func requireToken(cfg config.Config) error {
 	return nil
 }
 
-func apiRead[T any](operation func(*forgejo.Client) (T, error)) (T, error) {
-	cfg, err := loadConfig()
+func apiRead[T any](ctx context.Context, operation func(*forgejo.Client) (T, error)) (T, error) {
+	cfg, err := loadConfig(ctx)
 	if err != nil {
 		var zero T
 		return zero, err

@@ -15,7 +15,7 @@ func TestIssueEndpoints(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/acme/widget/issues":
 			if r.URL.Query().Get("state") != "open" ||
 				r.URL.Query().Get("type") != "issues" ||
-				r.URL.Query().Get("page") != "1" ||
+				r.URL.Query().Get("page") != "2" ||
 				r.URL.Query().Get("limit") != "5" {
 				t.Errorf("unexpected issue query: %v", r.URL.Query())
 			}
@@ -32,6 +32,29 @@ func TestIssueEndpoints(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, `{"number":13,"title":"Bug","state":"open"}`)
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/repos/acme/widget/issues/12":
+			var body struct {
+				State string `json:"state"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode issue state body: %v", err)
+			}
+			if body.State != "closed" {
+				t.Errorf("issue state = %q, want closed", body.State)
+			}
+			fmt.Fprint(w, `{"number":12,"title":"Bug","state":"closed"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/acme/widget/issues/12/comments":
+			var body struct {
+				Body string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode issue comment body: %v", err)
+			}
+			if body.Body != "A comment" {
+				t.Errorf("comment body = %q", body.Body)
+			}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":99,"body":"A comment","html_url":"https://codeberg.org/acme/widget/issues/12#issuecomment-99"}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -42,7 +65,7 @@ func TestIssueEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issues, err := client.ListIssues(context.Background(), "acme/widget", "open", 1, 5)
+	issues, err := client.ListIssues(context.Background(), "acme/widget", "open", 2, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,13 +86,29 @@ func TestIssueEndpoints(t *testing.T) {
 	if created.Index != 13 {
 		t.Fatalf("created issue = %#v", created)
 	}
+	closed, err := client.SetIssueState(context.Background(), "acme/widget", 12, "closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.State != "closed" {
+		t.Fatalf("closed issue = %#v", closed)
+	}
+	comment, err := client.AddIssueComment(context.Background(), "acme/widget", 12, "A comment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comment.ID != 99 {
+		t.Fatalf("comment = %#v", comment)
+	}
 }
 
 func TestPullRequestEndpoints(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/acme/widget/pulls":
-			if r.URL.Query().Get("state") != "open" || r.URL.Query().Get("limit") != "3" {
+			if r.URL.Query().Get("state") != "open" ||
+				r.URL.Query().Get("page") != "4" ||
+				r.URL.Query().Get("limit") != "3" {
 				t.Errorf("unexpected pull request query: %v", r.URL.Query())
 			}
 			fmt.Fprint(w, `[{"number":21,"title":"Feature","state":"open","draft":true}]`)
@@ -96,7 +135,7 @@ func TestPullRequestEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pulls, err := client.ListPullRequests(context.Background(), "acme/widget", "open", 1, 3)
+	pulls, err := client.ListPullRequests(context.Background(), "acme/widget", "open", 4, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

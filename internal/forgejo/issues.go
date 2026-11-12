@@ -21,6 +21,12 @@ type CreateIssueOptions struct {
 	Body  string `json:"body,omitempty"`
 }
 
+type IssueComment struct {
+	ID      int64  `json:"id"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
+}
+
 type PullRequest struct {
 	Index   int    `json:"number"`
 	Title   string `json:"title"`
@@ -72,6 +78,30 @@ func (c *Client) CreateIssue(ctx context.Context, repository string, options Cre
 	var issue Issue
 	err = c.Post(ctx, path, options, &issue)
 	return issue, err
+}
+
+func (c *Client) SetIssueState(ctx context.Context, repository string, index int, state string) (Issue, error) {
+	path, err := repositoryPath(repository, fmt.Sprintf("/issues/%d", index))
+	if err != nil {
+		return Issue{}, err
+	}
+	var issue Issue
+	err = c.Patch(ctx, path, struct {
+		State string `json:"state"`
+	}{State: state}, &issue)
+	return issue, err
+}
+
+func (c *Client) AddIssueComment(ctx context.Context, repository string, index int, body string) (IssueComment, error) {
+	path, err := repositoryPath(repository, fmt.Sprintf("/issues/%d/comments", index))
+	if err != nil {
+		return IssueComment{}, err
+	}
+	var comment IssueComment
+	err = c.Post(ctx, path, struct {
+		Body string `json:"body"`
+	}{Body: body}, &comment)
+	return comment, err
 }
 
 func (c *Client) ListPullRequests(ctx context.Context, repository, state string, page, limit int) ([]PullRequest, error) {

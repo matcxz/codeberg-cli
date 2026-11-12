@@ -66,3 +66,19 @@ func TestTruncateUsesDotsWhenValueDoesNotFit(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintNumberedListRespectsNarrowWidth(t *testing.T) {
+	var output bytes.Buffer
+	entries := [][3]string{{"123456789", "closed", "A long issue title that must fit"}}
+	if err := printNumberedListWidth(&output, entries, 25); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n") {
+		if width := len([]rune(line)); width > 25 {
+			t.Errorf("line width = %d, want at most 25: %q", width, line)
+		}
+	}
+	if !strings.Contains(output.String(), "...") {
+		t.Fatalf("expected long title to be truncated: %q", output.String())
+	}
+}

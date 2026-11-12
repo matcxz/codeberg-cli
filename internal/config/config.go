@@ -7,14 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const DefaultHost = "https://codeberg.org"
 
 type Config struct {
-	Host     string `json:"host"`
-	Token    string `json:"token,omitempty"`
-	Username string `json:"username,omitempty"`
+	Host           string     `json:"host"`
+	Token          string     `json:"token,omitempty"`
+	Username       string     `json:"username,omitempty"`
+	OAuthClientID  string     `json:"oauth_client_id,omitempty"`
+	RefreshToken   string     `json:"refresh_token,omitempty"`
+	TokenExpiresAt *time.Time `json:"token_expires_at,omitempty"`
 }
 
 func Path() (string, error) {

@@ -77,6 +77,10 @@ func (c *Client) Post(ctx context.Context, path string, body, result any) error 
 	return c.do(ctx, http.MethodPost, path, nil, body, result)
 }
 
+func (c *Client) Patch(ctx context.Context, path string, body, result any) error {
+	return c.do(ctx, http.MethodPatch, path, nil, body, result)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, result any) error {
 	endpoint := *c.baseURL
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + strings.TrimLeft(path, "/")

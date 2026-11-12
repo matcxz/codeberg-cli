@@ -10,6 +10,8 @@
 
 - Use Cobra commands in `cmd/` and keep Forgejo HTTP/API logic in `internal/forgejo/`.
 - Store user configuration in `internal/config/`; never print or log access tokens.
+- Keep saved credentials bound to their configured Forgejo host; do not send them to a `--host` override.
+- OAuth login must use authorization code with PKCE, a loopback callback, random `state`, and HTTPS for remote instances. Forgejo does not support OAuth device authorization.
 - Use the Forgejo `/api/v1` API. Do not require credentials for public reads; retry unauthenticated when a token is rejected only for missing scopes.
 - Preserve HTTPS for remote hosts and the existing permission protections for saved credentials.
 - Add focused tests for new behavior and mock HTTP APIs with `httptest`.

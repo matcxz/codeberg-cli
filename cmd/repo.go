@@ -24,13 +24,13 @@ func newRepoCommand() *cobra.Command {
 
 func newRepoListCommand() *cobra.Command {
 	var owner string
-	var limit int
+	var limit, page int
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List repositories",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig()
+			cfg, err := loadConfig(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -39,8 +39,8 @@ func newRepoListCommand() *cobra.Command {
 					return err
 				}
 			}
-			repositories, err := apiRead(func(client *forgejo.Client) ([]forgejo.Repository, error) {
-				return client.ListRepositories(cmd.Context(), owner, 1, limit)
+			repositories, err := apiRead(cmd.Context(), func(client *forgejo.Client) ([]forgejo.Repository, error) {
+				return client.ListRepositories(cmd.Context(), owner, page, limit)
 			})
 			if err != nil {
 				return err
@@ -50,9 +50,13 @@ func newRepoListCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&owner, "owner", "", "List public repositories for this user")
 	cmd.Flags().IntVar(&limit, "limit", 30, "Maximum repositories to return (1-50)")
+	cmd.Flags().IntVar(&page, "page", 1, "Page number")
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
 		if limit < 1 || limit > 50 {
 			return fmt.Errorf("--limit must be between 1 and 50")
+		}
+		if page < 1 {
+			return fmt.Errorf("--page must be at least 1")
 		}
 		return nil
 	}
@@ -65,7 +69,7 @@ func newRepoViewCommand() *cobra.Command {
 		Short: "Show repository details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repository, err := apiRead(func(client *forgejo.Client) (forgejo.Repository, error) {
+			repository, err := apiRead(cmd.Context(), func(client *forgejo.Client) (forgejo.Repository, error) {
 				return client.GetRepository(cmd.Context(), args[0])
 			})
 			if err != nil {
@@ -98,7 +102,7 @@ func newRepoCreateCommand() *cobra.Command {
 			if name == "" || strings.Contains(name, "/") {
 				return fmt.Errorf("repository name must be a non-empty name without slashes")
 			}
-			cfg, err := loadConfig()
+			cfg, err := loadConfig(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -194,9 +198,25 @@ func terminalWidth() int {
 }
 
 func printNumberedList(out io.Writer, entries [][3]string) error {
-	width := terminalWidth()
+	return printNumberedListWidth(out, entries, terminalWidth())
+}
+
+func printNumberedListWidth(out io.Writer, entries [][3]string, width int) error {
+	if width < 1 {
+		width = 80
+	}
+	numberWidth, stateWidth := len("NUMBER"), len("STATE")
+	for _, entry := range entries {
+		if size := len([]rune("#" + entry[0])); size > numberWidth {
+			numberWidth = size
+		}
+		if size := len([]rune(entry[1])); size > stateWidth {
+			stateWidth = size
+		}
+	}
 	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	if width < 24 {
+	titleWidth := width - numberWidth - stateWidth - 4
+	if titleWidth < len("TITLE") {
 		fmt.Fprintln(writer, truncate("ITEMS", width))
 		for _, entry := range entries {
 			line := fmt.Sprintf("#%s %s %s", entry[0], entry[1], entry[2])
@@ -204,8 +224,7 @@ func printNumberedList(out io.Writer, entries [][3]string) error {
 		}
 		return writer.Flush()
 	}
-	titleWidth := width - 21
-	fmt.Fprintln(writer, "NUMBER\tSTATE\tTITLE")
+	fmt.Fprintf(writer, "%s\t%s\tTITLE\n", truncate("NUMBER", numberWidth), truncate("STATE", stateWidth))
 	for _, entry := range entries {
 		fmt.Fprintf(writer, "#%s\t%s\t%s\n", entry[0], entry[1], truncate(singleLine(entry[2]), titleWidth))
 	}

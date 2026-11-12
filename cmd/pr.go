@@ -17,17 +17,22 @@ func newPRCommand() *cobra.Command {
 
 func newPRListCommand() *cobra.Command {
 	var repository, state string
-	var limit int
+	var limit, page int
 	command := &cobra.Command{
 		Use:   "list",
 		Short: "List pull requests in a repository",
 		Args:  cobra.NoArgs,
-		PreRunE: func(_ *cobra.Command, _ []string) error {
-			return validateListOptions(repository, state, limit)
+		PreRunE: func(command *cobra.Command, _ []string) error {
+			var err error
+			repository, err = resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
+			return validateListOptions(repository, state, page, limit)
 		},
 		RunE: func(command *cobra.Command, _ []string) error {
-			pulls, err := apiRead(func(client *forgejo.Client) ([]forgejo.PullRequest, error) {
-				return client.ListPullRequests(command.Context(), repository, state, 1, limit)
+			pulls, err := apiRead(command.Context(), func(client *forgejo.Client) ([]forgejo.PullRequest, error) {
+				return client.ListPullRequests(command.Context(), repository, state, page, limit)
 			})
 			if err != nil {
 				return err
@@ -48,10 +53,10 @@ func newPRListCommand() *cobra.Command {
 			return printNumberedList(command.OutOrStdout(), entries)
 		},
 	}
-	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format")
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
 	command.Flags().StringVar(&state, "state", "open", "Filter by state: open, closed, or all")
 	command.Flags().IntVar(&limit, "limit", 30, "Maximum pull requests to return (1-50)")
-	_ = command.MarkFlagRequired("repo")
+	command.Flags().IntVar(&page, "page", 1, "Page number")
 	return command
 }
 
@@ -62,11 +67,15 @@ func newPRViewCommand() *cobra.Command {
 		Short: "Show a pull request",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			repository, err := resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
 			index, err := positiveNumber(args[0])
 			if err != nil {
 				return err
 			}
-			pull, err := apiRead(func(client *forgejo.Client) (forgejo.PullRequest, error) {
+			pull, err := apiRead(command.Context(), func(client *forgejo.Client) (forgejo.PullRequest, error) {
 				return client.GetPullRequest(command.Context(), repository, index)
 			})
 			if err != nil {
@@ -85,8 +94,7 @@ func newPRViewCommand() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format")
-	_ = command.MarkFlagRequired("repo")
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
 	return command
 }
 
@@ -103,7 +111,11 @@ func newPRCreateCommand() *cobra.Command {
 			if strings.TrimSpace(head) == "" || strings.TrimSpace(base) == "" {
 				return fmt.Errorf("--head and --base are required")
 			}
-			client, err := apiClient(true)
+			repository, err := resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
+			client, err := apiClient(command.Context(), true)
 			if err != nil {
 				return err
 			}
@@ -123,14 +135,11 @@ func newPRCreateCommand() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format")
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
 	command.Flags().StringVarP(&title, "title", "t", "", "Pull request title")
 	command.Flags().StringVarP(&body, "body", "b", "", "Pull request description")
 	command.Flags().StringVar(&head, "head", "", "Source branch")
 	command.Flags().StringVar(&base, "base", "", "Target branch")
-	_ = command.MarkFlagRequired("repo")
 	_ = command.MarkFlagRequired("title")
-	_ = command.MarkFlagRequired("head")
-	_ = command.MarkFlagRequired("base")
 	return command
 }

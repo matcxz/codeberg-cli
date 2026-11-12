@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,23 +12,29 @@ import (
 
 func newIssueCommand() *cobra.Command {
 	command := &cobra.Command{Use: "issue", Short: "Manage repository issues"}
-	command.AddCommand(newIssueListCommand(), newIssueViewCommand(), newIssueCreateCommand())
+	command.AddCommand(newIssueListCommand(), newIssueViewCommand(), newIssueCreateCommand(),
+		newIssueCommentCommand(), newIssueCloseCommand("close", "closed"), newIssueCloseCommand("reopen", "open"))
 	return command
 }
 
 func newIssueListCommand() *cobra.Command {
 	var repository, state string
-	var limit int
+	var limit, page int
 	command := &cobra.Command{
 		Use:   "list",
 		Short: "List issues in a repository",
 		Args:  cobra.NoArgs,
-		PreRunE: func(_ *cobra.Command, _ []string) error {
-			return validateListOptions(repository, state, limit)
+		PreRunE: func(command *cobra.Command, _ []string) error {
+			var err error
+			repository, err = resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
+			return validateListOptions(repository, state, page, limit)
 		},
 		RunE: func(command *cobra.Command, _ []string) error {
-			issues, err := apiRead(func(client *forgejo.Client) ([]forgejo.Issue, error) {
-				return client.ListIssues(command.Context(), repository, state, 1, limit)
+			issues, err := apiRead(command.Context(), func(client *forgejo.Client) ([]forgejo.Issue, error) {
+				return client.ListIssues(command.Context(), repository, state, page, limit)
 			})
 			if err != nil {
 				return err
@@ -35,10 +42,10 @@ func newIssueListCommand() *cobra.Command {
 			return printIssueList(command, issues)
 		},
 	}
-	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format")
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
 	command.Flags().StringVar(&state, "state", "open", "Filter by state: open, closed, or all")
 	command.Flags().IntVar(&limit, "limit", 30, "Maximum issues to return (1-50)")
-	_ = command.MarkFlagRequired("repo")
+	command.Flags().IntVar(&page, "page", 1, "Page number")
 	return command
 }
 
@@ -49,11 +56,15 @@ func newIssueViewCommand() *cobra.Command {
 		Short: "Show an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			repository, err := resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
 			index, err := positiveNumber(args[0])
 			if err != nil {
 				return err
 			}
-			issue, err := apiRead(func(client *forgejo.Client) (forgejo.Issue, error) {
+			issue, err := apiRead(command.Context(), func(client *forgejo.Client) (forgejo.Issue, error) {
 				return client.GetIssue(command.Context(), repository, index)
 			})
 			if err != nil {
@@ -66,8 +77,7 @@ func newIssueViewCommand() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format")
-	_ = command.MarkFlagRequired("repo")
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
 	return command
 }
 
@@ -81,7 +91,11 @@ func newIssueCreateCommand() *cobra.Command {
 			if strings.TrimSpace(title) == "" {
 				return fmt.Errorf("--title cannot be empty")
 			}
-			client, err := apiClient(true)
+			repository, err := resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
+			client, err := apiClient(command.Context(), true)
 			if err != nil {
 				return err
 			}
@@ -99,11 +113,86 @@ func newIssueCreateCommand() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format")
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
 	command.Flags().StringVarP(&title, "title", "t", "", "Issue title")
 	command.Flags().StringVarP(&body, "body", "b", "", "Issue description")
-	_ = command.MarkFlagRequired("repo")
 	_ = command.MarkFlagRequired("title")
+	return command
+}
+
+func newIssueCommentCommand() *cobra.Command {
+	var repository, body string
+	command := &cobra.Command{
+		Use:   "comment NUMBER",
+		Short: "Add a comment to an issue",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			index, err := positiveNumber(args[0])
+			if err != nil {
+				return err
+			}
+			repository, err := resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(body) == "" {
+				return fmt.Errorf("--body cannot be empty")
+			}
+			client, err := apiClient(command.Context(), true)
+			if err != nil {
+				return err
+			}
+			comment, err := client.AddIssueComment(command.Context(), repository, index, body)
+			if err != nil {
+				return err
+			}
+			if jsonFlag {
+				return writeJSON(command.OutOrStdout(), comment)
+			}
+			fmt.Fprintf(command.OutOrStdout(), "Added comment to issue #%d\n", index)
+			if comment.HTMLURL != "" {
+				fmt.Fprintln(command.OutOrStdout(), comment.HTMLURL)
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
+	command.Flags().StringVarP(&body, "body", "b", "", "Comment text")
+	_ = command.MarkFlagRequired("body")
+	return command
+}
+
+func newIssueCloseCommand(use, targetState string) *cobra.Command {
+	var repository string
+	command := &cobra.Command{
+		Use:   use + " NUMBER",
+		Short: strings.ToUpper(use[:1]) + use[1:] + " an issue",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			index, err := positiveNumber(args[0])
+			if err != nil {
+				return err
+			}
+			repository, err := resolveRepository(command.Context(), repository)
+			if err != nil {
+				return err
+			}
+			client, err := apiClient(command.Context(), true)
+			if err != nil {
+				return err
+			}
+			issue, err := client.SetIssueState(command.Context(), repository, index, targetState)
+			if err != nil {
+				return err
+			}
+			if jsonFlag {
+				return writeJSON(command.OutOrStdout(), issue)
+			}
+			fmt.Fprintf(command.OutOrStdout(), "Issue #%d %s\n", index, targetState)
+			return nil
+		},
+	}
+	command.Flags().StringVarP(&repository, "repo", "R", "", "Repository in OWNER/NAME format (defaults to Git origin)")
 	return command
 }
 
@@ -118,7 +207,7 @@ func printIssueList(command *cobra.Command, issues []forgejo.Issue) error {
 	return printNumberedList(command.OutOrStdout(), entries)
 }
 
-func validateListOptions(repository, state string, limit int) error {
+func validateListOptions(repository, state string, page, limit int) error {
 	if _, _, ok := splitRepository(repository); !ok {
 		return fmt.Errorf("--repo must be in OWNER/NAME format")
 	}
@@ -127,6 +216,9 @@ func validateListOptions(repository, state string, limit int) error {
 	}
 	if limit < 1 || limit > 50 {
 		return fmt.Errorf("--limit must be between 1 and 50")
+	}
+	if page < 1 {
+		return fmt.Errorf("--page must be at least 1")
 	}
 	return nil
 }
@@ -144,8 +236,8 @@ func positiveNumber(value string) (int, error) {
 	return number, nil
 }
 
-func apiClient(authenticated bool) (*forgejo.Client, error) {
-	cfg, err := loadConfig()
+func apiClient(ctx context.Context, authenticated bool) (*forgejo.Client, error) {
+	cfg, err := loadConfig(ctx)
 	if err != nil {
 		return nil, err
 	}

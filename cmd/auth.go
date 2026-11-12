@@ -8,6 +8,7 @@ import (
 
 	"github.com/matcxz/codeberg-cli/internal/config"
 	"github.com/matcxz/codeberg-cli/internal/forgejo"
+	"github.com/matcxz/codeberg-cli/internal/oauth"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -22,10 +23,11 @@ func newAuthCommand() *cobra.Command {
 }
 
 func newAuthLoginCommand() *cobra.Command {
-	var tokenStdin bool
+	var tokenStdin, web, noBrowser bool
+	var clientID string
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate with a personal access token",
+		Short: "Authenticate with a personal access token or OAuth in a browser",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load()
@@ -33,6 +35,22 @@ func newAuthLoginCommand() *cobra.Command {
 				return err
 			}
 			host := configuredHost(cfg)
+			if web {
+				if tokenStdin {
+					return fmt.Errorf("--token-stdin cannot be combined with --web")
+				}
+				if strings.TrimSpace(os.Getenv("CODEBERG_TOKEN")) != "" {
+					return fmt.Errorf("unset CODEBERG_TOKEN before using browser login")
+				}
+				if strings.TrimSpace(clientID) == "" {
+					return fmt.Errorf("--client-id is required with --web; register a public OAuth application on this Forgejo instance")
+				}
+				clientID = strings.TrimSpace(clientID)
+				return loginWithOAuth(cmd, cfg, host, clientID, noBrowser)
+			}
+			if noBrowser || clientID != "" {
+				return fmt.Errorf("--no-browser and --client-id can only be used with --web")
+			}
 
 			token := strings.TrimSpace(os.Getenv("CODEBERG_TOKEN"))
 			if token == "" && tokenStdin {
@@ -70,6 +88,9 @@ func newAuthLoginCommand() *cobra.Command {
 			cfg.Username = user.Username
 			if os.Getenv("CODEBERG_TOKEN") == "" {
 				cfg.Token = token
+				cfg.OAuthClientID = ""
+				cfg.RefreshToken = ""
+				cfg.TokenExpiresAt = nil
 				if err := config.Save(cfg); err != nil {
 					return err
 				}
@@ -82,7 +103,53 @@ func newAuthLoginCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&tokenStdin, "token-stdin", false, "Read the token from standard input")
+	cmd.Flags().BoolVar(&web, "web", false, "Authenticate in a browser using OAuth authorization code with PKCE")
+	cmd.Flags().StringVar(&clientID, "client-id", "", "Client ID of a public OAuth application registered on the instance")
+	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Print the authorization URL instead of opening a browser")
 	return cmd
+}
+
+func loginWithOAuth(command *cobra.Command, cfg config.Config, host, clientID string, noBrowser bool) error {
+	fmt.Fprintf(command.ErrOrStderr(), "Starting secure browser authorization for %s...\n", host)
+	fmt.Fprintln(command.ErrOrStderr(), "Warning: Forgejo OAuth applications do not currently support permission scopes; review the access grant before approving.")
+	open := func(target string) error {
+		if noBrowser {
+			_, err := fmt.Fprintf(command.ErrOrStderr(), "Open this URL to authorize cb:\n%s\n", target)
+			return err
+		}
+		return openBrowser(command, target)
+	}
+	token, err := oauth.Authorize(command.Context(), host, clientID, open)
+	if err != nil {
+		return err
+	}
+	client, err := forgejo.NewClient(host, token.AccessToken)
+	if err != nil {
+		return err
+	}
+	user, err := client.CurrentUser(command.Context())
+	if err != nil {
+		return fmt.Errorf("verify OAuth token: %w", err)
+	}
+	cfg.Host = host
+	cfg.Username = user.Username
+	cfg.Token = token.AccessToken
+	cfg.OAuthClientID = clientID
+	cfg.RefreshToken = token.RefreshToken
+	cfg.TokenExpiresAt = nil
+	if !token.ExpiresAt.IsZero() {
+		cfg.TokenExpiresAt = &token.ExpiresAt
+	}
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+	fmt.Fprintf(command.OutOrStdout(), "Authenticated as %s on %s using OAuth.\n", user.Username, host)
+	if token.RefreshToken != "" {
+		fmt.Fprintln(command.OutOrStdout(), "The OAuth token will be refreshed automatically when it expires.")
+	} else if !token.ExpiresAt.IsZero() {
+		fmt.Fprintln(command.OutOrStdout(), "This OAuth token expires; run `cb auth login --web` again when it does.")
+	}
+	return nil
 }
 
 func newAuthStatusCommand() *cobra.Command {
@@ -91,7 +158,7 @@ func newAuthStatusCommand() *cobra.Command {
 		Short: "Show the current authentication status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig()
+			cfg, err := loadConfig(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -125,6 +192,9 @@ func newAuthLogoutCommand() *cobra.Command {
 			}
 			cfg.Token = ""
 			cfg.Username = ""
+			cfg.OAuthClientID = ""
+			cfg.RefreshToken = ""
+			cfg.TokenExpiresAt = nil
 			if err := config.Save(cfg); err != nil {
 				return err
 			}

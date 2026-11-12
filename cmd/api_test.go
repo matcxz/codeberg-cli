@@ -27,7 +27,7 @@ func TestAPIReadRetriesWithoutInsufficientScopeToken(t *testing.T) {
 	t.Setenv("CODEBERG_HOST", server.URL)
 	t.Setenv("CODEBERG_TOKEN", "limited-token")
 
-	issue, err := apiRead(func(client *forgejo.Client) (forgejo.Issue, error) {
+	issue, err := apiRead(context.Background(), func(client *forgejo.Client) (forgejo.Issue, error) {
 		return client.GetIssue(context.Background(), "owner/repo", 1)
 	})
 	if err != nil {
